@@ -268,7 +268,7 @@ async def check_wilaya():
         page.on("response", handle_response)
         try:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking {TARGET_NAME} ({TARGET_CODE})...")
-            await page.goto("https://adhahi.dz/register", wait_until="networkidle", timeout=30000)
+            await page.goto("https://adhahi.dz/register", wait_until="networkidle", timeout=15000)
             await page.wait_for_timeout(3000)
 
             # التحقق من الـ API أولاً
