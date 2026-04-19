@@ -4,10 +4,16 @@ import aiohttp
 from playwright.async_api import async_playwright
 from datetime import datetime
 
+# ======================================
+# إعدادات البوت (غيرها حسب بياناتك)
+# ======================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID")
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 
+# ======================================
+# قائمة الولايات الجزائرية (58 ولاية)
+# ======================================
 WILAYAS = {
     "01": "أدرار", "02": "الشلف", "03": "الأغواط", "04": "أم البواقي",
     "05": "باتنة", "06": "بجاية", "07": "بسكرة", "08": "بشار",
@@ -27,11 +33,14 @@ WILAYAS = {
 }
 
 # ======================================
-# غير هذا السطر فقط لتغيير الولاية
+# الولاية المستهدفة (قابلة للتغيير عبر التيليجرام)
 # ======================================
-TARGET_CODE = os.getenv("WILAYA_CODE", "05")
+TARGET_CODE = os.getenv("WILAYA_CODE", "16")
 TARGET_NAME = WILAYAS.get(TARGET_CODE, TARGET_CODE)
 
+# ======================================
+# الحالة العامة للبوت
+# ======================================
 state = {
     "running": True,
     "interval": INTERVAL_MINUTES,
@@ -42,6 +51,9 @@ state = {
     "last_update_id": 0,
 }
 
+# ======================================
+# أيقونات للرسائل
+# ======================================
 ICON_GREEN  = "\U0001F7E2"
 ICON_RED    = "\U0001F534"
 ICON_CHECK  = "\u2705"
@@ -56,6 +68,9 @@ ICON_PAUSE  = "\u23F8"
 ICON_PLAY   = "\u25B6"
 ICON_SEARCH = "\U0001F50D"
 
+# ======================================
+# دوال إرسال واستقبال التيليجرام
+# ======================================
 async def send_telegram(message, chat_id=None):
     cid = chat_id or CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -83,6 +98,22 @@ async def get_updates():
         pass
     return []
 
+# ======================================
+# دالة تغيير الولاية عن طريق التيليجرام
+# ======================================
+async def set_wilaya_by_code(code):
+    """تغيير الولاية المستهدفة باستخدام الرقم"""
+    global TARGET_CODE, TARGET_NAME
+    code = str(code).strip().zfill(2)
+    if code in WILAYAS:
+        TARGET_CODE = code
+        TARGET_NAME = WILAYAS[code]
+        return True, TARGET_NAME
+    return False, None
+
+# ======================================
+# دالة معالجة الأوامر من التيليجرام (معدلة)
+# ======================================
 async def handle_commands():
     updates = await get_updates()
     for update in updates:
@@ -96,6 +127,7 @@ async def handle_commands():
             continue
         print(f"[CMD] {text}")
 
+        # عرض الحالة الحالية
         if text == "/status":
             now = state["last_check_time"] or "لم يتم بعد"
             status_icon = ICON_CHECK if state["last_status"] else ICON_CROSS
@@ -111,6 +143,7 @@ async def handle_commands():
                 f"السبب: {state['last_reason']}"
             )
 
+        # فحص يدوي فوري
         elif text == "/check":
             await send_telegram(f"{ICON_SEARCH} جاري الفحص الآن...")
             result = await check_wilaya()
@@ -126,14 +159,17 @@ async def handle_commands():
                 f"{ICON_CLOCK} {datetime.now().strftime('%H:%M:%S')}"
             )
 
+        # إيقاف المراقبة
         elif text == "/stop":
             state["running"] = False
             await send_telegram(f"{ICON_PAUSE} <b>تم إيقاف المراقبة</b>\n\nاستخدم /start لاستئنافها")
 
+        # استئناف المراقبة
         elif text == "/start":
             state["running"] = True
             await send_telegram(f"{ICON_PLAY} <b>تم استئناف المراقبة</b>\n\nالفحص كل {state['interval']} دقيقة")
 
+        # تغيير فترة الفحص
         elif text.startswith("/interval"):
             parts = text.split()
             if len(parts) == 2 and parts[1].isdigit():
@@ -146,6 +182,38 @@ async def handle_commands():
             else:
                 await send_telegram("الاستخدام: /interval 3\nمثال: /interval 10")
 
+        # ========== الأمر الجديد: تغيير الولاية ==========
+        elif text.startswith("/setwilaya"):
+            parts = text.split()
+            if len(parts) == 2:
+                wilaya_code = parts[1].strip()
+                success, name = await set_wilaya_by_code(wilaya_code)
+                if success:
+                    await send_telegram(
+                        f"{ICON_CHECK} <b>تم تغيير الولاية بنجاح</b>\n\n"
+                        f"الولاية الجديدة: {name} ({wilaya_code})\n"
+                        f"سيتم تطبيق التغيير على الفور"
+                    )
+                    # إعادة تعيين الحالة لتجنب إشعارات خاطئة
+                    state["last_status"] = None
+                    state["last_reason"] = f"تم التغيير إلى {name}"
+                    print(f"[INFO] Wilaya changed to {name} ({wilaya_code})")
+                else:
+                    await send_telegram(
+                        f"{ICON_CROSS} <b>ولاية غير صحيحة</b>\n\n"
+                        f"الرمز '{wilaya_code}' غير موجود.\n"
+                        f"استخدم /wilayas لعرض قائمة الولايات"
+                    )
+            else:
+                await send_telegram(
+                    f"{ICON_SEARCH} <b>طريقة الاستخدام</b>\n\n"
+                    f"/setwilaya <رمز الولاية>\n\n"
+                    f"مثال: /setwilaya 16  (للجزائر العاصمة)\n"
+                    f"مثال: /setwilaya 31  (لوهران)\n\n"
+                    f"استخدم /wilayas لعرض جميع الرموز"
+                )
+
+        # عرض قائمة الولايات
         elif text == "/wilayas":
             lines = [f"{ICON_GLOBE} <b>قائمة الولايات</b>\n"]
             for code, name in sorted(WILAYAS.items()):
@@ -153,6 +221,7 @@ async def handle_commands():
                 lines.append(f"{code} - {name}{marker}")
             await send_telegram("\n".join(lines))
 
+        # عرض قائمة الأوامر
         elif text == "/help":
             await send_telegram(
                 f"{ICON_ROBOT} <b>الأوامر المتاحة</b>\n\n"
@@ -161,12 +230,15 @@ async def handle_commands():
                 f"/stop — إيقاف المراقبة\n"
                 f"/start — استئناف المراقبة\n"
                 f"/interval 5 — تغيير فترة الفحص\n"
+                f"/setwilaya 16 — تغيير الولاية (مثال: 16 للجزائر)\n"
                 f"/wilayas — قائمة كل الولايات\n"
                 f"/help — هذه القائمة\n\n"
-                f"الولاية الحالية: {TARGET_NAME} ({TARGET_CODE})\n"
-                f"لتغيير الولاية غير WILAYA_CODE في Railway Variables"
+                f"الولاية الحالية: {TARGET_NAME} ({TARGET_CODE})"
             )
 
+# ======================================
+# دالة فحص موقع adhahi.dz
+# ======================================
 async def check_wilaya():
     result = {"available": False, "reason": "unknown"}
     async with async_playwright() as p:
@@ -199,6 +271,7 @@ async def check_wilaya():
             await page.goto("https://adhahi.dz/register", wait_until="networkidle", timeout=30000)
             await page.wait_for_timeout(3000)
 
+            # التحقق من الـ API أولاً
             if api_data.get("last"):
                 import json
                 s = json.dumps(api_data["last"]["data"]).lower()
@@ -216,12 +289,14 @@ async def check_wilaya():
                     await browser.close()
                     return result
 
+            # التحقق من محتوى الصفحة
             content = await page.content()
             closed_words = ["complet", "ferme", "epuise", "sold out", "quota atteint"]
             open_words   = ["disponible", "ouvert", "احجز", "حجز"]
             is_closed = any(w in content.lower() for w in closed_words)
             is_open   = any(w in content.lower() for w in open_words)
 
+            # محاولة اختيار الولاية من القائمة المنسدلة
             try:
                 sel = page.locator(
                     'select[name*="wilaya"], select[id*="wilaya"], select[name*="province"]'
@@ -260,6 +335,9 @@ async def check_wilaya():
             await browser.close()
     return result
 
+# ======================================
+# الحلقة الرئيسية للمراقبة
+# ======================================
 async def monitor_loop():
     while True:
         if state["running"]:
@@ -269,6 +347,8 @@ async def monitor_loop():
             state["last_check_time"] = datetime.now().strftime("%H:%M:%S")
             state["last_reason"] = r["reason"]
             print(f"[STATUS] {'AVAILABLE' if r['available'] else 'NOT available'} - {r['reason']}")
+            
+            # إرسال إشعار عند تغير الحالة
             if r["available"] != state["last_status"]:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if r["available"]:
@@ -287,6 +367,8 @@ async def monitor_loop():
                 state["last_status"] = r["available"]
             else:
                 print("[=] No status change")
+            
+            # تقرير دوري كل 30 فحصاً
             if state["check_count"] % 30 == 0:
                 status_label = "متاح" if r["available"] else "غير متاح"
                 await send_telegram(
@@ -297,6 +379,8 @@ async def monitor_loop():
                 )
         else:
             print("[PAUSED] Monitoring is stopped")
+        
+        # انتظار الفترة المحددة مع معالجة الأوامر
         elapsed = 0
         interval_secs = state["interval"] * 60
         while elapsed < interval_secs:
@@ -304,6 +388,9 @@ async def monitor_loop():
             await asyncio.sleep(3)
             elapsed += 3
 
+# ======================================
+# نقطة الدخول الرئيسية
+# ======================================
 async def main():
     print(f"Adhahi Monitor - {TARGET_NAME} ({TARGET_CODE}) | Every {state['interval']} min")
     await send_telegram(
@@ -317,7 +404,9 @@ async def main():
         f"/stop — إيقاف\n"
         f"/start — تشغيل\n"
         f"/interval 5 — تغيير الفترة\n"
-        f"/wilayas — قائمة الولايات"
+        f"/setwilaya 16 — تغيير الولاية\n"
+        f"/wilayas — قائمة الولايات\n"
+        f"/help — هذه القائمة"
     )
     await monitor_loop()
 
