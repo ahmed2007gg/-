@@ -8,6 +8,19 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID")
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 
+# ======================================
+# State
+# ======================================
+state = {
+    "running": True,
+    "interval": INTERVAL_MINUTES,
+    "last_status": None,
+    "last_check_time": None,
+    "last_reason": "لم يتم الفحص بعد",
+    "check_count": 0,
+    "last_update_id": 0,
+}
+
 ICON_GREEN  = "\U0001F7E2"
 ICON_RED    = "\U0001F534"
 ICON_CHECK  = "\u2705"
@@ -18,12 +31,17 @@ ICON_LINK   = "\U0001F517"
 ICON_CHART  = "\U0001F4CA"
 ICON_ROBOT  = "\U0001F916"
 ICON_GLOBE  = "\U0001F310"
-ICON_AVAIL  = "\u2705 Available"
-ICON_NAVAIL = "\u274C Not available"
+ICON_PAUSE  = "\u23F8"
+ICON_PLAY   = "\u25B6"
+ICON_SEARCH = "\U0001F50D"
 
-async def send_telegram(message):
+# ======================================
+# Telegram - Send
+# ======================================
+async def send_telegram(message, chat_id=None):
+    cid = chat_id or CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+    payload = {"chat_id": cid, "text": message, "parse_mode": "HTML"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as resp:
@@ -34,7 +52,107 @@ async def send_telegram(message):
     except Exception as e:
         print(f"[ERR] Telegram: {e}")
 
+# ======================================
+# Telegram - Get updates (polling)
+# ======================================
+async def get_updates():
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    params = {"offset": state["last_update_id"] + 1, "timeout": 2}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("result", [])
+    except Exception:
+        pass
+    return []
 
+# ======================================
+# Handle incoming commands
+# ======================================
+async def handle_commands():
+    updates = await get_updates()
+    for update in updates:
+        state["last_update_id"] = update["update_id"]
+        msg = update.get("message") or update.get("edited_message")
+        if not msg:
+            continue
+
+        text = msg.get("text", "").strip().lower()
+        chat_id = str(msg["chat"]["id"])
+
+        # Only respond to authorized chat
+        if chat_id != str(CHAT_ID):
+            continue
+
+        print(f"[CMD] {text}")
+
+        if text == "/status":
+            now = state["last_check_time"] or "لم يتم بعد"
+            status_icon = ICON_CHECK if state["last_status"] else ICON_CROSS
+            running_icon = ICON_PLAY if state["running"] else ICON_PAUSE
+            await send_telegram(
+                f"{ICON_CHART} <b>الحالة الحالية</b>\n\n"
+                f"{status_icon} التوفر: {'متاح' if state['last_status'] else 'غير متاح'}\n"
+                f"{running_icon} المراقبة: {'شغالة' if state['running'] else 'موقوفة'}\n"
+                f"{ICON_TIMER} الفحص كل: {state['interval']} دقيقة\n"
+                f"{ICON_SEARCH} عدد الفحوصات: {state['check_count']}\n"
+                f"{ICON_CLOCK} آخر فحص: {now}\n"
+                f"السبب: {state['last_reason']}"
+            )
+
+        elif text == "/check":
+            await send_telegram(f"{ICON_SEARCH} جاري الفحص الآن...")
+            result = await check_batna()
+            state["last_status"] = result["available"]
+            state["last_reason"] = result["reason"]
+            state["last_check_time"] = datetime.now().strftime("%H:%M:%S")
+            state["check_count"] += 1
+            status_icon = ICON_CHECK if result["available"] else ICON_CROSS
+            await send_telegram(
+                f"{status_icon} <b>نتيجة الفحص</b>\n\n"
+                f"باتنة: {'متاح' if result['available'] else 'غير متاح'}\n"
+                f"السبب: {result['reason']}\n"
+                f"{ICON_CLOCK} {datetime.now().strftime('%H:%M:%S')}"
+            )
+
+        elif text == "/stop":
+            state["running"] = False
+            await send_telegram(f"{ICON_PAUSE} <b>تم إيقاف المراقبة</b>\n\nاستخدم /start لاستئنافها")
+
+        elif text == "/start":
+            state["running"] = True
+            await send_telegram(f"{ICON_PLAY} <b>تم استئناف المراقبة</b>\n\nالفحص كل {state['interval']} دقيقة")
+
+        elif text.startswith("/interval"):
+            parts = text.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                mins = int(parts[1])
+                if 1 <= mins <= 60:
+                    state["interval"] = mins
+                    await send_telegram(
+                        f"{ICON_TIMER} <b>تم تغيير فترة الفحص</b>\n\nالفحص الآن كل {mins} دقيقة"
+                    )
+                else:
+                    await send_telegram("القيمة يجب تكون بين 1 و 60 دقيقة")
+            else:
+                await send_telegram("الاستخدام: /interval 3\nمثال: /interval 10")
+
+        elif text == "/help":
+            await send_telegram(
+                f"{ICON_ROBOT} <b>الأوامر المتاحة</b>\n\n"
+                f"/status — الحالة الحالية\n"
+                f"/check — فحص يدوي فوري\n"
+                f"/stop — إيقاف المراقبة\n"
+                f"/start — استئناف المراقبة\n"
+                f"/interval 5 — تغيير فترة الفحص (بالدقائق)\n"
+                f"/help — هذه القائمة"
+            )
+
+# ======================================
+# Check Batna availability
+# ======================================
 async def check_batna():
     result = {"available": False, "reason": "unknown"}
 
@@ -135,67 +253,78 @@ async def check_batna():
 
     return result
 
+# ======================================
+# Monitor loop
+# ======================================
+async def monitor_loop():
+    while True:
+        if state["running"]:
+            state["check_count"] += 1
+            print(f"\n=== Check #{state['check_count']} ===")
 
-last_status = None
-check_count = 0
+            r = await check_batna()
+            state["last_check_time"] = datetime.now().strftime("%H:%M:%S")
+            state["last_reason"] = r["reason"]
+            print(f"[STATUS] {'AVAILABLE' if r['available'] else 'NOT available'} - {r['reason']}")
 
-async def run_monitor():
-    global last_status, check_count
-    check_count += 1
-    print(f"\n=== Check #{check_count} ===")
+            if r["available"] != state["last_status"]:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if r["available"]:
+                    await send_telegram(
+                        f"{ICON_GREEN} <b>باتنة - متاح!</b>\n\n"
+                        f"{ICON_CHECK} فتح التسجيل لولاية باتنة!\n\n"
+                        f"{ICON_LINK} https://adhahi.dz/register\n"
+                        f"{ICON_CLOCK} {now}"
+                    )
+                elif state["last_status"] is not None:
+                    await send_telegram(
+                        f"{ICON_RED} <b>باتنة - مغلق</b>\n\n"
+                        f"{ICON_CROSS} انتهى التسجيل لباتنة\n"
+                        f"{ICON_CLOCK} {now}"
+                    )
+                state["last_status"] = r["available"]
+            else:
+                print("[=] No status change")
 
-    r = await check_batna()
-    status_str = "AVAILABLE" if r["available"] else "NOT available"
-    print(f"[STATUS] {status_str} - {r['reason']}")
+            if state["check_count"] % 30 == 0:
+                status_label = "متاح" if r["available"] else "غير متاح"
+                await send_telegram(
+                    f"{ICON_CHART} <b>تقرير دوري - باتنة</b>\n"
+                    f"الفحوصات: {state['check_count']}\n"
+                    f"الحالة: {status_label}\n"
+                    f"{ICON_CLOCK} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+        else:
+            print("[PAUSED] Monitoring is stopped")
 
-    if r["available"] != last_status:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if r["available"]:
-            msg = (
-                f"{ICON_GREEN} <b>batna - متاح!</b>\n\n"
-                f"{ICON_CHECK} فتح التسجيل لولاية باتنة!\n\n"
-                f"{ICON_LINK} https://adhahi.dz/register\n"
-                f"{ICON_CLOCK} {now}"
-            )
-            await send_telegram(msg)
-        elif last_status is not None:
-            msg = (
-                f"{ICON_RED} <b>باتنة - مغلق</b>\n\n"
-                f"{ICON_CROSS} انتهى التسجيل لباتنة\n"
-                f"{ICON_CLOCK} {now}"
-            )
-            await send_telegram(msg)
-        last_status = r["available"]
-    else:
-        print("[=] No status change")
+        # Wait interval while checking commands every 3 seconds
+        elapsed = 0
+        interval_secs = state["interval"] * 60
+        while elapsed < interval_secs:
+            await handle_commands()
+            await asyncio.sleep(3)
+            elapsed += 3
 
-    if check_count % 30 == 0:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        status_label = ICON_AVAIL if r["available"] else ICON_NAVAIL
-        msg = (
-            f"{ICON_CHART} <b>Adhahi - Batna Report</b>\n"
-            f"Checks: {check_count}\n"
-            f"Status: {status_label}\n"
-            f"{ICON_CLOCK} {now}"
-        )
-        await send_telegram(msg)
-
-
+# ======================================
+# Main
+# ======================================
 async def main():
-    print(f"Adhahi Monitor - Batna | Every {INTERVAL_MINUTES} min")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    msg = (
+    print(f"Adhahi Monitor - Batna | Every {state['interval']} min")
+
+    await send_telegram(
         f"{ICON_ROBOT} <b>Adhahi Monitor - باتنة</b>\n"
         f"{ICON_CHECK} Bot started\n"
-        f"{ICON_TIMER} Every {INTERVAL_MINUTES} min\n"
-        f"{ICON_GLOBE} https://adhahi.dz/register\n"
-        f"{ICON_CLOCK} {now}"
+        f"{ICON_TIMER} Every {state['interval']} min\n"
+        f"{ICON_GLOBE} https://adhahi.dz/register\n\n"
+        f"الأوامر:\n"
+        f"/status — الحالة\n"
+        f"/check — فحص فوري\n"
+        f"/stop — إيقاف\n"
+        f"/start — تشغيل\n"
+        f"/interval 5 — تغيير الفترة"
     )
-    await send_telegram(msg)
 
-    while True:
-        await run_monitor()
-        await asyncio.sleep(INTERVAL_MINUTES * 60)
+    await monitor_loop()
 
 
 if __name__ == "__main__":
